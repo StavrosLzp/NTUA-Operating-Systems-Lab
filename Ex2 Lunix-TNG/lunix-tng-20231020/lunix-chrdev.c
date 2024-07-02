@@ -37,21 +37,15 @@ struct cdev lunix_chrdev_cdev;
  * Just a quick [unlocked] check to see if the cached
  * chrdev state needs to be updated from sensor measurements.
  */
-/*
- * Declare a prototype so we can define the "unused" attribute and keep
- * the compiler happy. This function is not yet used, because this helpcode
- * is a stub.
- */
 static int lunix_chrdev_state_needs_refresh(struct lunix_chrdev_state_struct *state)
 {
 	struct lunix_sensor_struct *sensor;
-	debug("enetering\n");
-	/* ? */
+	debug("entering\n");
+
 	sensor = state->sensor;
 	if (state->buf_timestamp < sensor->msr_data[state->type]->last_update)
 		return 1;
-	/* The following return is bogus, just for the stub to compile */
-	return 0; /* ? */
+	return 0; 
 }
 
 /*
@@ -77,41 +71,35 @@ static int lunix_chrdev_state_update(struct lunix_chrdev_state_struct *state)
 	raw_data = sensor->msr_data[state->type]->values[0];
 	timestamp = sensor->msr_data[state->type]->last_update;
 	spin_unlock_irqrestore(&sensor->lock, flags);
-	/* ? */
-	
-  /* Why use spinlocks? See LDD3, p. 119 */
-
-  /*
-	 * Any new data available?
-   */
-  if(!(state->buf_timestamp < timestamp))
+  	/* Why use spinlocks? See LDD3, p. 119 Cant use semaphores in interupt context */
+  	/* Any new data available? */
+  	if(!(state->buf_timestamp < timestamp))
 	 	return -EAGAIN;
-	/* ? */
-
 	/*
 	 * Now we can take our time to format them,
 	 * holding only the private state semaphore
 	 */
-	if (state->type == BATT)
-		cooked_data = lookup_voltage[raw_data];
-	else if (state->type == TEMP)
-		cooked_data = lookup_temperature[raw_data];
-	else if (state->type == LIGHT)
-		cooked_data = lookup_light[raw_data];
-	else 
-		goto out;
+	if (state->raw == 0){
+		if (state->type == BATT)
+			cooked_data = lookup_voltage[raw_data];
+		else if (state->type == TEMP)
+			cooked_data = lookup_temperature[raw_data];
+		else if (state->type == LIGHT)
+			cooked_data = lookup_light[raw_data];
+		else 
+			goto out;
 
-
-
-	state->buf_lim = snprintf(state->buf_data, LUNIX_CHRDEV_BUFSZ,
-			"%ld.%03ld ", cooked_data/1000, cooked_data%1000);
-	state->buf_timestamp = timestamp;
-
-	/* ? */
+		state->buf_lim = snprintf(state->buf_data, LUNIX_CHRDEV_BUFSZ,
+				"%ld.%03ld ", cooked_data/1000, cooked_data%1000);
+		state->buf_timestamp = timestamp;
+	} else {
+		state->buf_lim = snprintf(state->buf_data, LUNIX_CHRDEV_BUFSZ,
+				"%ld\n", raw_data);
+	}
 
 out:
 	debug("leaving\n");
-	return 0;
+	return 0;	
 }
 
 /*************************************
@@ -152,12 +140,12 @@ static int lunix_chrdev_open(struct inode *inode, struct file *filp)
 	chrdev_state->buf_timestamp = 0;
 	sema_init(&chrdev_state->lock, 1);
 	chrdev_state->nonblocking = 0; //(filp->f_flags & O_NONBLOCK) ? 1 : 0;
+	lunix_chrdev_state->raw = 0;
 
 	filp->private_data =chrdev_state;
 
 	debug("chrdev_state initialized successfully");	
 
-	/* ? */
 out:
 	debug("leaving, with ret = %d\n", ret);
 	return ret;
@@ -172,24 +160,39 @@ static int lunix_chrdev_release(struct inode *inode, struct file *filp)
 
 static long lunix_chrdev_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	/* Why? */
-	return -EINVAL;
+	struct lunix_chrdev_state_struct *chrdev_state;
+
+	/*
+	* extract the type and number bitfields, and don't decode
+	* wrong cmds: return ENOTTY (inappropriate ioctl) before access_ok( )
+	*/
+	if (_IOC_TYPE(cmd) != LUNIX_IOC_MAGIC) return -ENOTTY;
+	if (_IOC_NR(cmd) > LUNIX_IOC_MAXNR) return -ENOTTY;
+
+	chrdev_state = filp->private_data;
+	if(cmd = LUNIX_IOC_RAW ) {
+		down_interruptible(&chrdev_state->lock);
+		chrdev_state->raw = (int) arg;
+		up(&chrdev_state->lock);
+	}else {
+		return -ENOTTY;
+	}
+	return 0;
 }
 
 static ssize_t lunix_chrdev_read(struct file *filp, char __user *usrbuf, size_t cnt, loff_t *f_pos)
 {
 	ssize_t ret, cached_bytes;
 	struct lunix_sensor_struct *sensor;
-	struct lunix_chrdev_state_struct *state;
+	struct lunix_chrdev_state_struct *chrdev_state;
 
-	state = filp->private_data;
-	WARN_ON(!state);
+	chrdev_state = filp->private_data;
+	WARN_ON(!chrdev_state);
 
-	sensor = state->sensor;
+	sensor = chrdev_state->sensor;
 	WARN_ON(!sensor);
 
-	/* Lock? */
-	if (down_interruptible(&state->lock))
+	if (down_interruptible(&chrdev_state->lock)) // Can do, process context
 		return -ERESTARTSYS;
 	/*
 	 * If the cached character device state needs to be
@@ -197,50 +200,45 @@ static ssize_t lunix_chrdev_read(struct file *filp, char __user *usrbuf, size_t 
 	 * on a "fresh" measurement, do so
 	 */
 	if (*f_pos == 0) {
-		while (lunix_chrdev_state_update(state) == -EAGAIN) {
-			/* ? */
+		while (lunix_chrdev_state_update(chrdev_state) == -EAGAIN) {
 			/* The process needs to sleep */
-			up(&state->lock);
-			if (state->nonblocking)
+			up(&chrdev_state->lock);
+			if (chrdev_state->nonblocking)
 				return -EAGAIN;
 			/*wait_event_interruptible(queue, condition) wait queue until */
-			if (wait_event_interruptible(sensor->wq, lunix_chrdev_state_needs_refresh(state)))
+			if (wait_event_interruptible(sensor->wq, lunix_chrdev_state_needs_refresh(chrdev_state)))
 				return -ERESTARTSYS; /* signal: tell the fs layer to handle it */
 
-			if (down_interruptible(&state->lock))
+			if (down_interruptible(&chrdev_state->lock))
 				return -ERESTARTSYS;
 			/* See LDD3, page 153 for a hint */
 		}
 	}
 
 	/* End of file */
-	if (!state->buf_lim){
+	if (!chrdev_state->buf_lim){
 		ret = 0 ;
 		goto out;
 	}
-	/* ? */
-	
+
 	/* Determine the number of cached bytes to copy to userspace */
-	cached_bytes = state->buf_lim - *f_pos;
+	cached_bytes = chrdev_state->buf_lim - *f_pos;
 	if (cached_bytes < cnt)
 		cnt = cached_bytes;
 
-	if (copy_to_user(usrbuf, state->buf_data + *f_pos, cnt)){
+	if (copy_to_user(usrbuf, chrdev_state->buf_data + *f_pos, cnt)){
 		ret = -EFAULT;
 		goto out;
 	}
 	ret = cnt;
 	*f_pos += cnt;
-	/* ? */
 
 	/* Auto-rewind on EOF mode? */
-	if (*f_pos >= state->buf_lim){
+	if (*f_pos >= chrdev_state->buf_lim){
 		*f_pos = 0;
 	}
-	/* ? */
 out:
-	/* Unlock? */
-	up(&state->lock);
+	up(&chrdev_state->lock);
 	return ret;
 }
 

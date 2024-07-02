@@ -41,10 +41,8 @@ struct lunix_chrdev_state_struct {
 
 	struct semaphore lock;
 
+	int raw;
 	int nonblocking;
-	/*
-	 * Fixme: Any mode settings? e.g. blocking vs. non-blocking
-	 */
 };
 
 /*
@@ -62,6 +60,8 @@ void lunix_chrdev_destroy(void);
  */
 #define LUNIX_IOC_MAGIC			LUNIX_CHRDEV_MAJOR
 //#define LUNIX_IOC_EXAMPLE		_IOR(LUNIX_IOC_MAGIC, 0, void *)
+
+#define LUNIX_IOC_RAW		_IOR(LUNIX_IOC_MAGIC, 0, void *)
 
 #define LUNIX_IOC_MAXNR			0	
 

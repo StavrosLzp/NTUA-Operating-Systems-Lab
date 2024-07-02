@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "Linux",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/lib/modules/6.9.7-arch1-1/build/include/linux/",
+                "/usr/lib/modules/6.9.7-arch1-1/build/arch/x86/include/asm",
+                "/usr/lib/modules/6.9.7-arch1-1/build/include",
+                "/usr/lib/modules/6.9.7-arch1-1/build/arch/x86/include"
+            ],
+            "defines": [],
+            "compilerPath": "/usr/bin/gcc-13"
+        }
+    ],
+    "version": 4
+}
